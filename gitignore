@@ -1,0 +1,10 @@
+# results — never commit target data
+results/
+*.txt
+*.log
+*.pcap
+*.zip
+
+# OS
+.DS_Store
+Thumbs.db
