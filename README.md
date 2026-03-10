@@ -3,10 +3,16 @@
 Kali setup and per-target engagement scripts for OSCP.  
 Clone, run once, go fast.
 
+```bash
+git clone git@github.com:jimi421/vajra.git ~/tools/vajra
+bash ~/tools/vajra/setup.sh
 ```
-git clone git@github.com:jimi421/vajra.git ~/vajra
-cd ~/vajra
-bash setup.sh
+
+After setup, `go.sh` is available as an alias from anywhere:
+
+```bash
+cd ~/labs/access
+go.sh 10.10.10.10
 ```
 
 ---
@@ -30,12 +36,17 @@ bash setup.sh
 
 Takes an IP, exports environment variables, builds the results folder, sets ulimit, and fires a background scan immediately.
 
-**Must be sourced** to export variables into your shell:
+**Must be sourced** to export variables into your shell. After running `setup.sh`, the `go.sh` alias handles this automatically. Drops folder structure in your **current directory** — navigate to your target folder first:
 
 ```bash
-source ~/vajra/go.sh <target_ip>
-source ~/vajra/go.sh <target_ip> <lhost>
-source ~/vajra/go.sh <target_ip> <lhost> <lport>
+cd ~/labs/machine1
+go.sh 10.10.10.10
+```
+
+Or call it directly:
+
+```bash
+source ~/tools/vajra/go.sh 10.10.10.10
 ```
 
 What it does:

@@ -25,16 +25,16 @@ cat > "$ALIAS_FILE" << 'ALIASES'
 # ── vajra aliases ────────────────────────────
 alias ll='ls -lah'
 alias ports='ss -tulnp'
-alias myip='ip route get 1 | awk "{print \$7; exit}"'
+alias myip='ip -4 addr show tun0 2>/dev/null | awk "/inet /{print \$2}" | cut -d/ -f1'
+
+# vajra — per-target engagement setup
+alias go.sh='source ~/tools/vajra/go.sh'
 
 # HTTP server — serve current directory
 alias serve='python3 -m http.server 8000'
 
 # Quick listener
 alias listen='sudo nc -lvnp 443'
-
-# Go to results
-alias results='cd ~/results'
 
 # Feroxbuster quick web enum
 alias fero='feroxbuster -u http://$IP -w /usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt -o scans/ferox.txt'
@@ -125,12 +125,12 @@ if [[ -f /usr/share/wordlists/rockyou.txt.gz ]]; then
   sudo gunzip /usr/share/wordlists/rockyou.txt.gz
 fi
 
-# ── Results dir ───────────────────────────────
-mkdir -p ~/results
-echo ""
-echo "[+] ~/results/ ready"
+# ── Tools dir ─────────────────────────────────
+mkdir -p ~/tools
+echo "[+] ~/tools/ ready"
 
 # ── Done ──────────────────────────────────────
 echo ""
 echo "[+] Setup complete. Reload shell or run: source ~/.bashrc"
+echo "[+] Usage: cd <target_dir> && go.sh <target_ip>"
 echo ""
