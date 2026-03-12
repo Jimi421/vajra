@@ -16,8 +16,8 @@ if [[ ! "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
 fi
 
 # ── Variables ─────────────────────────────────
-export IP="$1"
-export LABEL="${2:-$IP}"
+export ip="$1"
+export LABEL="${2:-$ip}"
 export LPORT="443"
 
 export LHOST
@@ -67,7 +67,7 @@ printf '   ╚████╔╝ ██║  ██║╚█████╔╝█
 printf '    ╚═══╝  ╚═╝  ╚═╝ ╚════╝ ╚═╝  ╚═╝╚═╝  ╚═╝\n'
 printf '\n'
 printf '  ┌──────────────────────────────────────┐\n'
-printf '  │  IP     %-29s│\n' "$IP"
+printf '  │  IP     %-29s│\n' "$ip"
 printf '  │  LABEL  %-29s│\n' "$LABEL"
 printf '  │  SUBNET %-29s│\n' "${SUBNET:-not set}"
 printf '  │  LHOST  %-29s│\n' "$LHOST"
@@ -80,10 +80,10 @@ printf '\n'
 # ── Scan ──────────────────────────────────────
 if command -v rustscan &>/dev/null; then
   printf '[*] rustscan starting → %s/scans/rustscan.txt\n' "$TARGET_DIR"
-  rustscan -a "$IP" --ulimit 5000 -- -sV -sC | tee "${TARGET_DIR}/scans/rustscan.txt"
+  rustscan -a "$ip" --ulimit 5000 -- -sV -sC | tee "${TARGET_DIR}/scans/rustscan.txt"
 else
   printf '[*] rustscan not found — falling back to nmap\n'
-  nmap -p- --min-rate 5000 -T4 --open -sV -sC "$IP" -oN "${TARGET_DIR}/scans/allports.txt"
+  nmap -p- --min-rate 5000 -T4 --open -sV -sC "$ip" -oN "${TARGET_DIR}/scans/allports.txt"
 fi
 
 printf '\n[+] Done. Working dir: %s\n' "$TARGET_DIR"
