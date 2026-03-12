@@ -80,10 +80,10 @@ printf '\n'
 # ── Scan ──────────────────────────────────────
 if command -v rustscan &>/dev/null; then
   printf '[*] rustscan starting → %s/scans/rustscan.txt\n' "$TARGET_DIR"
-  rustscan -a "$IP" --ulimit 5000 | tee "${TARGET_DIR}/scans/rustscan.txt"
+  rustscan -a "$IP" --ulimit 5000 -- -sV -sC | tee "${TARGET_DIR}/scans/rustscan.txt"
 else
   printf '[*] rustscan not found — falling back to nmap\n'
-  nmap -p- --min-rate 5000 -T4 --open "$IP" -oN "${TARGET_DIR}/scans/allports.txt"
+  nmap -p- --min-rate 5000 -T4 --open -sV -sC "$IP" -oN "${TARGET_DIR}/scans/allports.txt"
 fi
 
 printf '\n[+] Done. Working dir: %s\n' "$TARGET_DIR"

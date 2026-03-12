@@ -4,17 +4,12 @@
 #  run once on a fresh box: bash setup.sh
 # ─────────────────────────────────────────────
 
-# set -u  : treat unset variables as errors
-# set -o pipefail : catch failures inside pipes
-# NOT set -e : we handle errors per-command so one
-#              failure doesn't abort the whole setup
 set -uo pipefail
 
-# ── Helpers ───────────────────────────────────
-info()    { printf '[*] %s\n' "$*"; }
-ok()      { printf '[+] %s\n' "$*"; }
-skip()    { printf '[=] %s\n' "$*"; }
-warn()    { printf '[!] %s\n' "$*" >&2; }
+info()  { printf '[*] %s\n' "$*"; }
+ok()    { printf '[+] %s\n' "$*"; }
+skip()  { printf '[=] %s\n' "$*"; }
+warn()  { printf '[!] %s\n' "$*" >&2; }
 
 # ── Guard: must NOT be sourced ────────────────
 if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
@@ -27,57 +22,39 @@ printf '\n'
 info "vajra setup starting..."
 printf '\n'
 
-# ── Permanent ulimit in .bashrc ───────────────
-if ! grep -q "ulimit -n 5000" ~/.bashrc; then
-  printf 'ulimit -n 5000\n' >> ~/.bashrc
-  ok "ulimit -n 5000 added to ~/.bashrc"
-else
-  skip "ulimit already in ~/.bashrc"
-fi
+# ── Helper: add line to .bashrc if not present ──
+add_to_bashrc() {
+  local line="$1"
+  if ! grep -qF "$line" ~/.bashrc; then
+    printf '%s\n' "$line" >> ~/.bashrc
+    ok "Added: $line"
+  else
+    skip "Already in .bashrc: $line"
+  fi
+}
+
+# ── ulimit ────────────────────────────────────
+add_to_bashrc 'ulimit -n 5000'
 
 # ── Aliases ───────────────────────────────────
-ALIAS_FILE="${HOME}/.config/vajra/aliases.sh"
-mkdir -p "${HOME}/.config/vajra"
+printf '\n'
+info "Wiring aliases into ~/.bashrc..."
 
-# Note: heredoc uses single-quoted delimiter 'ALIASES' so nothing
-# inside expands at write time — aliases are written literally.
-# The awk $2 is safe because it only expands when the alias runs.
-cat > "$ALIAS_FILE" << 'ALIASES'
-# ── vajra aliases ─────────────────────────────
-
-# vajra — per-target engagement setup
-# aliased so 'source' is implicit — vars export into current shell
-alias go.sh='source ~/tools/vajra/go.sh'
-
-# System shortcuts
-alias ll='ls -lah'
-alias ports='ss -tulnp'
-
-# tun0 IP — useful when you need $LHOST quickly
-alias myip='ip -4 addr show tun0 2>/dev/null | awk "/inet /{split(\$2,a,\"/\"); print a[1]; exit}"'
-
-# HTTP server — serve current directory for file delivery
-alias serve='python3 -m http.server 8000'
-
-# Listener — quick nc on 443
-alias listen='sudo nc -lvnp 443'
-
-# Feroxbuster — web directory brute against $IP
-alias fero='feroxbuster -u "http://${IP}" -w /usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt -o scans/ferox.txt'
-
-# Searchsploit shortcuts
-# Note: 'sp' not 'ss' — ss is a system tool (socket stats) on Kali
-alias sp='searchsploit'
-alias spm='searchsploit -m'
-alias spx='searchsploit -x'
-ALIASES
-
-if ! grep -q "vajra/aliases.sh" ~/.bashrc; then
-  printf '[ -f ~/.config/vajra/aliases.sh ] && source ~/.config/vajra/aliases.sh\n' >> ~/.bashrc
-  ok "aliases wired into ~/.bashrc"
+add_to_bashrc "alias pyfix='python3 ~/tools/vajra/pyfix.py'"
+add_to_bashrc "alias ll='ls -lah'"
+add_to_bashrc "alias ports='ss -tulnp'"
+# myip — function avoids metacharacter escaping issues in .bashrc
+if ! grep -q "myip()" ~/.bashrc; then
+  printf 'myip() { ip -4 addr show tun0 2>/dev/null | grep -oP "(?<=inet )[.0-9]+"; }\n' >> ~/.bashrc
+  ok "Added: myip()"
 else
-  skip "aliases already in ~/.bashrc"
+  skip "Already in .bashrc: myip()"
 fi
+add_to_bashrc "alias serve='python3 -m http.server 8000'"
+add_to_bashrc "alias listen='sudo nc -lvnp 443'"
+add_to_bashrc "alias sp='searchsploit'"
+add_to_bashrc "alias spm='searchsploit -m'"
+add_to_bashrc "alias spx='searchsploit -x'"
 
 # ── Tool check ────────────────────────────────
 printf '\n'
@@ -166,13 +143,11 @@ for wl in "${WORDLISTS[@]}"; do
   fi
 done
 
-# Install seclists if any are missing
 if [[ ! -d /usr/share/seclists ]]; then
   info "Installing seclists..."
   sudo apt-get install -y -qq seclists && ok "seclists installed" || warn "seclists install failed"
 fi
 
-# Decompress rockyou if still gzipped
 if [[ -f /usr/share/wordlists/rockyou.txt.gz && ! -f /usr/share/wordlists/rockyou.txt ]]; then
   info "Decompressing rockyou..."
   sudo gunzip /usr/share/wordlists/rockyou.txt.gz && ok "rockyou decompressed"
@@ -186,5 +161,5 @@ ok "~/tools/ ready"
 printf '\n'
 ok "Setup complete."
 printf '    Reload shell: source ~/.bashrc\n'
-printf '    Usage:        cd <target_dir> && go.sh <target_ip>\n'
+printf '    Usage:        cd <target_dir> && source ~/tools/vajra/go.sh <target_ip>\n'
 printf '\n'
