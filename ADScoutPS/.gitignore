@@ -1,0 +1,5 @@
+ADScout-Results/
+*.zip
+*.log
+*.bak
+.DS_Store

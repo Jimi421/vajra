@@ -1,0 +1,19 @@
+# Don't commit downloaded tools (they're rebuildable via setup.sh)
+oscp-tools/
+~/oscp-tools/
+
+# Setup log
+setup.log
+
+# OS junk
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Editor configs
+.vscode/
+.idea/
+
+# Local override of setup if you want to test without affecting the canonical
+setup.local.sh
