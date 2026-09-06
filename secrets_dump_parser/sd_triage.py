@@ -19,7 +19,9 @@ C = {"crit": "91", "high": "93", "med": "96", "dim": "90", "ok": "92", "hdr": "3
 
 
 def col(t, c, on=True):
-    return f"\x1b[{c}m{t}\x1b[0m" if on else t
+    # accept either a raw ANSI code ("36") or a palette key ("hdr")
+    code = C.get(c, c)
+    return f"\x1b[{code}m{t}\x1b[0m" if on else t
 
 
 def parse(text):
