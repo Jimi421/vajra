@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Tiny stdlib-only HTTP file server with upload + download.
+"""Tiny stdlib-only HTTP file server with GET/POST/PUT upload + download.
 
-No third-party deps, no `cgi` (removed in Python 3.13). Uploads land in the
-served directory; browse and click to download anything in it.
+No third-party deps, no `cgi` (removed in Python 3.13). Recursively browse
+folders, click files to download, upload with the browser, or PUT with curl.
 
     python3 fileserver.py                  # serve cwd on :8000
     python3 fileserver.py -p 9001          # custom port
@@ -23,6 +23,7 @@ import sys
 import time
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
+from urllib.parse import quote, unquote, urlsplit
 
 PAGE = """<!doctype html>
 <html lang="en">
@@ -116,60 +117,231 @@ def parse_multipart(body: bytes, boundary: bytes):
 
 
 class Handler(SimpleHTTPRequestHandler):
+    quiet = False
+
+    def _root(self) -> Path:
+        return Path(self.directory).resolve()
+
+    def _url_path(self) -> str:
+        return unquote(urlsplit(self.path).path)
+
+    def _safe_target(self, url_path: str | None = None) -> Path:
+        """Map a URL path into the served tree, rejecting traversal/symlink escapes."""
+        raw = self._url_path() if url_path is None else url_path
+        if "\x00" in raw or "\\" in raw:
+            raise ValueError("invalid path")
+
+        parts = []
+        for part in raw.split("/"):
+            if part in ("", "."):
+                continue
+            if part == "..":
+                raise ValueError("path traversal")
+            parts.append(part)
+
+        root = self._root()
+        target = root.joinpath(*parts).resolve(strict=False)
+        try:
+            target.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("outside served directory") from exc
+        return target
+
+    def _virtual_path(self, target: Path) -> str:
+        rel = target.relative_to(self._root())
+        if not rel.parts:
+            return "/"
+        return "/" + "/".join(rel.parts) + "/"
+
+    def _send_directory(self, directory: Path) -> None:
+        rows = []
+
+        if directory != self._root():
+            rows.append(
+                '<li><a href="../">📁 ../</a>'
+                '<span class="size">parent</span></li>'
+            )
+
+        try:
+            entries = sorted(
+                directory.iterdir(),
+                key=lambda x: (not x.is_dir(), x.name.lower()),
+            )
+        except OSError as e:
+            self.send_error(403, f"Cannot list directory: {e}")
+            return
+
+        root = self._root()
+        for p in entries:
+            # Do not advertise symlinks that resolve outside the served tree.
+            try:
+                resolved = p.resolve()
+                resolved.relative_to(root)
+            except (OSError, ValueError):
+                continue
+
+            label = html.escape(p.name)
+            href = quote(p.name, safe="")
+            try:
+                if p.is_dir():
+                    rows.append(
+                        f'<li><a href="{href}/">📁 {label}/</a>'
+                        '<span class="size">dir</span></li>'
+                    )
+                elif p.is_file():
+                    rows.append(
+                        f'<li><a href="{href}" download>📄 {label}</a>'
+                        f'<span class="size">{human(p.stat().st_size)}</span></li>'
+                    )
+            except OSError:
+                continue
+
+        listing = "".join(rows) or '<li class="empty">no files yet</li>'
+        shown = html.escape(str(directory))
+        page = PAGE.format(cwd=shown, listing=listing)
+        body = page.encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
-        # Serve the upload page at root; delegate real file downloads to
-        # SimpleHTTPRequestHandler (handles ranges, mime types, traversal).
-        if self.path == "/":
-            root = Path(self.directory)
-            rows = []
-            for p in sorted(root.iterdir(), key=lambda x: x.name.lower()):
-                if not p.is_file():
-                    continue
-                name = html.escape(p.name)
-                rows.append(
-                    f'<li><a href="/{name}" download>{name}</a>'
-                    f'<span class="size">{human(p.stat().st_size)}</span></li>'
-                )
-            listing = "".join(rows) or '<li class="empty">no files yet</li>'
-            page = PAGE.format(cwd=html.escape(str(root.resolve())), listing=listing)
-            body = page.encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
+        try:
+            target = self._safe_target()
+        except ValueError:
+            self.send_error(403, "Path outside served directory")
+            return
+
+        if target.is_dir():
+            # Keep relative links/forms sane by canonicalizing directory URLs.
+            if not urlsplit(self.path).path.endswith("/"):
+                location = urlsplit(self.path).path + "/"
+                self.send_response(301)
+                self.send_header("Location", location)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            self._send_directory(target)
+            return
+
+        if not target.exists():
+            self.send_error(404, "File not found")
+            return
+
+        # SimpleHTTPRequestHandler handles MIME types, Range requests, etc.
+        super().do_GET()
+
+    def do_PUT(self):
+        """Create or replace a file anywhere inside an existing served folder.
+
+        Examples:
+            curl -T linpeas.sh http://HOST:8000/tools/linux/linpeas.sh
+            curl -T winPEAS.exe http://HOST:8000/tools/windows/winPEAS.exe
+        """
+        raw_path = self._url_path()
+        if not raw_path or raw_path.endswith("/"):
+            self.send_error(400, "PUT requires a destination filename")
+            return
+
+        try:
+            target = self._safe_target(raw_path)
+        except ValueError:
+            self.send_error(403, "Path outside served directory")
+            return
+
+        if target.exists() and target.is_dir():
+            self.send_error(409, "Destination is a directory")
+            return
+        if not target.parent.is_dir():
+            self.send_error(409, "Parent directory does not exist")
+            return
+
+        length_header = self.headers.get("Content-Length")
+        if length_header is None:
+            self.send_error(411, "Content-Length required")
+            return
+        try:
+            length = int(length_header)
+        except ValueError:
+            self.send_error(400, "Invalid Content-Length")
+            return
+        if length < 0:
+            self.send_error(400, "Invalid Content-Length")
+            return
+
+        existed = target.exists()
+        data = self.rfile.read(length)
+        try:
+            target.write_bytes(data)
+        except OSError as e:
+            self.send_error(500, f"Could not write file: {e}")
+            return
+
+        rel = target.relative_to(self._root()).as_posix()
+        print(f"  + PUT {rel} ({human(len(data))})")
+
+        if existed:
+            self.send_response(204)
             self.end_headers()
-            self.wfile.write(body)
         else:
-            super().do_GET()
+            self.send_response(201)
+            self.send_header("Location", "/" + quote(rel, safe="/"))
+            self.send_header("Content-Length", "0")
+            self.end_headers()
 
     def do_POST(self):
+        """Multipart upload into the directory represented by the request URL."""
+        try:
+            directory = self._safe_target()
+        except ValueError:
+            self.send_error(403, "Path outside served directory")
+            return
+        if not directory.is_dir():
+            self.send_error(404, "Upload destination is not a directory")
+            return
+
         ctype = self.headers.get("Content-Type", "")
         m = re.search(r"boundary=([^;]+)", ctype)
-        length = int(self.headers.get("Content-Length", 0))
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except ValueError:
+            length = 0
         if "multipart/form-data" not in ctype or not m or length <= 0:
             self.send_error(400, "Expected a multipart file upload")
             return
 
         boundary = m.group(1).strip().strip('"').encode()
         body = self.rfile.read(length)
-        root = Path(self.directory)
         saved = 0
         for filename, data in parse_multipart(body, boundary):
-            safe = Path(filename).name  # strip any path components
-            if not safe:
+            safe = Path(filename).name  # strip client-provided path components
+            if not safe or safe in (".", ".."):
                 continue
-            (root / safe).write_bytes(data)
-            print(f"  + {safe} ({human(len(data))})")
+            target = directory / safe
+            try:
+                target.write_bytes(data)
+            except OSError as e:
+                self.send_error(500, f"Could not write {safe}: {e}")
+                return
+            rel = target.relative_to(self._root()).as_posix()
+            print(f"  + POST {rel} ({human(len(data))})")
             saved += 1
 
         if saved:
+            # Return to the directory the user uploaded into.
+            loc = urlsplit(self.path).path
+            if not loc.endswith("/"):
+                loc += "/"
             self.send_response(303)
-            self.send_header("Location", "/")
+            self.send_header("Location", loc)
             self.end_headers()
         else:
             self.send_error(400, "No file in upload")
 
     def log_message(self, fmt, *args):
-        print(f"  {self.address_string()} {fmt % args}")
+        if not self.quiet:
+            print(f"  {self.address_string()} {fmt % args}")
 
 
 def interface_ips():
@@ -239,7 +411,8 @@ def print_addresses(port: int, host: str) -> None:
     curl_ip = vpn[0][1] if vpn else (lan[0][1] if lan else default_route_ip())
     print("\nCurl examples:")
     print(f'  DOWNLOAD: curl -O http://{curl_ip}:{port}/FILE')
-    print(f'  UPLOAD:   curl -F "file=@C:/temp/file.exe" http://{curl_ip}:{port}/')
+    print(f'  POST:     curl -F "file=@C:/temp/file.exe" http://{curl_ip}:{port}/')
+    print(f'  PUT:      curl -T ./file.exe http://{curl_ip}:{port}/file.exe')
 
 
 def port_free(host: str, port: int) -> bool:
@@ -384,10 +557,13 @@ def main():
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("-a", "--auto-port", action="store_true",
                     help="on conflict, auto-pick the next free port (no prompt)")
+    ap.add_argument("-q", "--quiet", action="store_true",
+                    help="suppress per-request access logs")
     args = ap.parse_args()
 
     directory = str(Path(args.dir).resolve())
     port = resolve_port(args.host, args.port, args.auto_port)
+    Handler.quiet = args.quiet
 
     def handler(*a, **kw):
         return Handler(*a, directory=directory, **kw)
@@ -401,7 +577,7 @@ def main():
         raise
     print(f"Serving {directory}")
     print_addresses(port, args.host)
-    print("Uploads land in the served directory. Ctrl-C to stop.\n")
+    print("Browse folders recursively; browser uploads land in the current folder. Ctrl-C to stop.\n")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
@@ -410,4 +586,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-                 
