@@ -30,7 +30,7 @@ In Vedic tradition the *vajra* is Indra's weapon: a thunderbolt that's both inde
 | --- | --- |
 | **ad_hostmap** | Scans a routed lab subnet, flags the likely DC via Kerberos (88), resolves hostnames over SMB, and writes them straight into `/etc/hosts`. VPN auto-detect (`--auto`), automatic backups, and a clean `--restore`. Drops an IP list ready to feed NetExec. |
 | **web_server** (`fileserver.py`) | Zero-dependency, stdlib-only HTTP file server for fast transfers onto a target. |
-| **webshell_forge** (`v1.2.0`) | Stack-aware webshell forge (PHP / ASP / ASPX / JSP / CFM / CGI). Stamps a shell into every executable extension with upload-filter bypass variants, writes an `ffuf` wordlist to find which one runs, generates a PHP connect-back (`shellx`) with LHOST/LPORT baked in, and has an encoder mode for injection through hostile boundaries. Menu-driven — just run it. |
+| **webshell_forge** (`v1.2.0`) | Stack-aware webshell forge (PHP / ASP / ASPX / JSP / CFM / CGI). Stamps a shell into every executable extension with upload-filter bypass variants, writes an `ffuf` wordlist to find which one runs, generates `shellx` — an **OS-detecting PHP connect-back that works on both Linux and Windows** (auto-picks bash/sh or cmd.exe) — and has an encoder mode for injection through hostile boundaries. Menu-driven; just run it. |
 | **webshell_extension_changer.sh** | Clones a payload across PHP/CGI bypass extensions (`.phtml`, `.phar`, `.php5`, `.shtml`, `.cgi`…), plus double-extension and case tricks, and emits a filename wordlist + ready-to-run ffuf line. |
 
 ---
@@ -113,4 +113,4 @@ For **authorized security testing and education only**. Read-only where it says 
 
 ---
 
-*Built and battle-tested in OSCP-style labs. ⚡*
+*Built and battle-tested in OSCP-style labs. ⚡
