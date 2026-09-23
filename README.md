@@ -2,52 +2,75 @@
 
 *The thunderbolt — a personal offensive-security toolkit for AD-focused pentesting and OSCP-style labs.*
 
-**Recon → Enumeration → Exploitation → Post-Ex → Pivot.** Mostly stdlib-only Python and dependency-light Bash, built to be dropped onto a box and just work.
+**Recon → Enumeration → Priv-Esc → Lateral → Loot.** Mostly stdlib-only Python and dependency-light Bash/PowerShell. The whole kit follows one rule: **run it → copy/catch the result.** Every tool prints the exact next command so you're never stuck grepping output at 2am.
 
-> ⚠️ **Authorized use only.** Every tool here is for environments you own or have explicit written permission to test — labs, CTFs, and sanctioned engagements. Using them anywhere else is illegal, and how you use them is on you.
+> ⚠️ **Authorized use only.** Everything here runs against environments you own or have explicit written permission to test — labs, CTFs, and scoped engagements. Using them anywhere else is illegal, and how you use them is on you.
 
 ---
 
 ## Why "Vajra"?
 
-In Vedic tradition the *vajra* is Indra's weapon: a thunderbolt that's both indestructible and irresistible. That's the goal here — a small, sharp arsenal where each tool does one job and does it reliably under pressure, when you're deep in a lab at 2am and need it to just run.
+In Vedic tradition the *vajra* is Indra's weapon: a thunderbolt that's both indestructible and irresistible. That's the goal — a small, sharp arsenal where each tool does one job, does it reliably, and hands you the next move.
 
 ---
 
-## 🗂️ The Arsenal
-
-### 🔍 Recon & Initial Access
+## ⚙️ Workflow & Environment
 
 | Tool | What it does |
 | --- | --- |
-| **ad_hostmap** | Bash. Scans a routed lab subnet, flags the likely DC via Kerberos (88), resolves hostnames over SMB, and writes them straight into `/etc/hosts`. VPN auto-detect (`--auto`), backups, and a clean `--restore`. |
+| **setup.sh** | One-time Kali config. Wires aliases and a `myip()` helper into `.bashrc`, bumps the file-descriptor limit, and checks the core toolset is installed (nmap, rustscan, feroxbuster, ffuf, evil-winrm, impacket, ligolo-ng, bloodhound…). |
+| **go.sh** | Per-target engagement setup. `source go.sh <ip> [label]` auto-detects `tun0` for LHOST, sets LPORT, builds a clean `scans/exploits/loot/screenshots/tunnels` folder tree, and prints an at-a-glance target banner. |
+| **pyfix.py** | Python 2 → 3 exploit converter. Detects Py2 signatures in an exploit-db script and refactors it (`print`, `raw_input`, `urllib2`, `except E, e`, etc.). `--dry-run`, `--inplace`, or writes `*_py3.py`. Turns dead exploits into working ones. |
+
+---
+
+## 🔍 Recon & Initial Access
+
+| Tool | What it does |
+| --- | --- |
+| **ad_hostmap** | Scans a routed lab subnet, flags the likely DC via Kerberos (88), resolves hostnames over SMB, and writes them straight into `/etc/hosts`. VPN auto-detect (`--auto`), automatic backups, and a clean `--restore`. Drops an IP list ready to feed NetExec. |
 | **web_server** (`fileserver.py`) | Zero-dependency, stdlib-only HTTP file server for fast transfers onto a target. |
-| **webshell_forge** | Stack-aware webshell generator (PHP / ASP / ASPX / JSP / CFM / CGI). `cmd` and `reverse` templates, `tun0` auto-LHOST, upload-filter bypass variants (double-ext, case, trailing, magic-byte), ffuf wordlist output, and an encoder mode for command injection through hostile boundaries. |
-| **webshell_extension_changer.sh** | Bulk-renames webshell payloads across extensions to defeat upload filters. |
+| **webshell_forge** (`v1.2.0`) | Stack-aware webshell forge (PHP / ASP / ASPX / JSP / CFM / CGI). Stamps a shell into every executable extension with upload-filter bypass variants, writes an `ffuf` wordlist to find which one runs, generates a PHP connect-back (`shellx`) with LHOST/LPORT baked in, and has an encoder mode for injection through hostile boundaries. Menu-driven — just run it. |
+| **webshell_extension_changer.sh** | Clones a payload across PHP/CGI bypass extensions (`.phtml`, `.phar`, `.php5`, `.shtml`, `.cgi`…), plus double-extension and case tricks, and emits a filename wordlist + ready-to-run ffuf line. |
 
-### 🧭 Enumeration
+---
 
-| Tool | What it does |
-| --- | --- |
-| **ADScoutPS** | Read-only PowerShell AD enumeration module. Native .NET/LDAP, never modifies objects. One-command collection (`Invoke-ADScout`) with CSV/JSON exports, a `summary.md` report, recursive group expansion, privileged-membership review, delegation and stale-host hints, and GPO/OU/ACL/interesting-ACE collection. |
-| **power_shellz** | Collection of PowerShell scripts and payloads for on-host enumeration and execution. |
-
-### 💥 Post-Exploitation & Loot Parsing
+## 🧭 AD Enumeration
 
 | Tool | What it does |
 | --- | --- |
-| **parse_mimi** | Parses raw mimikatz output into clean, filterable creds. |
-| **parse_ntds** | Parses NTDS dumps into usable hash/user lists. |
-| **secrets_dump_parser** | Cleans up `secretsdump.py` output for triage and cracking. |
-| **parse_blood** | Post-processes BloodHound data for quick answers. |
-| **peas_parse** | Cuts linPEAS/winPEAS noise down to the findings that matter. |
+| **ADScoutPS** | Read-only PowerShell AD enumeration module. Native .NET/LDAP, never modifies objects. One command (`Invoke-ADScout`) collects everything into CSV/JSON with a `summary.md` report: recursive group expansion, privileged-membership review, delegation and stale-host hints, SPN accounts, and GPO/OU/ACL/interesting-ACE collection. |
 
-### ↔️ Lateral Movement & Pivoting
+---
+
+## ⬆️ Privilege Escalation & Lateral Movement
 
 | Tool | What it does |
 | --- | --- |
-| **lateral_check** | Fast checks for lateral-movement opportunities across mapped hosts. |
-| **ligolo_setup.sh** | One-shot setup for Ligolo-ng tunneling so you can pivot into internal subnets. |
+| **power_shellz** | Windows operator kit. **Se-privilege abuse** scripts turn a dangerous token into impact: `SeRestore`/`SeTakeOwnership` → SYSTEM shell, `SeBackup` → SAM/NTDS hashes, `SeDebug` → LSASS. Three **lateral-movement paths** (DCOM over 135, WinRM, CIM) so when one's blocked the next is ready, plus `encode.py` for a paste-ready base64 PowerShell reverse shell. Fire-and-forget: start your listener first. |
+| **lateral_check** | Two-stage credential validator for spraying safely. Stage 1 confirms the cred negotiates via `impacket-rdp_check`; stage 2 uses NetExec (SMB/WinRM/RDP) to classify *what* the access means. Outputs `pwned.txt` (local admin), `access.txt` (any access), and a full `results.csv` — and stops after N consecutive failures so you don't lock the account. |
+
+---
+
+## ↔️ Pivoting
+
+| Tool | What it does |
+| --- | --- |
+| **ligolo_setup.sh** | The boring, easy-to-fat-finger Kali-side plumbing around Ligolo-ng. `up` / `route` / `unroute` / `status` / `down`, idempotent tun setup, and multi-tunnel support for double pivots. |
+
+---
+
+## 💥 Loot Parsing
+
+Every parser follows the same idea: **dump to a file → run the script → copy the printed command.** No manual grep / cut / awk.
+
+| Tool | What it does |
+| --- | --- |
+| **parse_ntds** | Turns `secretsdump` / NTDS.dit output into aligned user + NT-hash files and prints the pass-the-hash spray line. Flags the **RID 500** hash (own the box) and **krbtgt** (golden ticket), and emits a crackable-hashes file for hashcat. |
+| **parse_mimi** | Parses raw mimikatz output into clean, filterable credentials. |
+| **secrets_dump_parser** (`sd_triage.py`) | Ranks secretsdump output into cleartext creds, usable hashes, what's worth cracking, and ready-to-paste NetExec spray lines. |
+| **parse_blood** | Pulls usernames out of a BloodHound export into a spray-ready `users.txt`. |
+| **peas_parse** (`peas_triage.py`) | Triages linPEAS/winPEAS dumps — ranks the findings that matter (token privs, ACL abuse, SUID, sudo, caps, kerberoastable, creds-in-files) with an abuse hint for each. `--min high` to cut the noise. |
 
 ---
 
@@ -56,40 +79,37 @@ In Vedic tradition the *vajra* is Indra's weapon: a thunderbolt that's both inde
 ```bash
 git clone https://github.com/Jimi421/vajra.git
 cd vajra
-./setup.sh          # install / stage the toolkit
+bash setup.sh                       # one-time Kali config
+
+# per target:
+source go.sh 10.10.10.5 boxname     # dirs + LHOST/LPORT + banner
 ```
 
-Map an AD lab straight into `/etc/hosts`:
+Map an AD lab into `/etc/hosts`, then spray:
 
 ```bash
 sudo ./ad_hostsmap/ad_hostmap.sh --auto
 nxc smb ad_hostmap-hosts.txt -u <user> -p <pass>
 ```
 
-Serve a file onto a target:
-
-```bash
-python3 web_server/fileserver.py
-```
-
-Each tool has its own usage — run a script with `-h`/`--help`, or check its folder.
+Each tool has its own README/`-h`. Start there.
 
 ---
 
 ## 🧰 Requirements
 
-Varies by tool, but the common ones:
+Varies by tool; the common ones:
 
-- Linux attack host (Kali / ParrotOS)
-- `python3` (stdlib only for most tools)
-- `nmap`, `nxc` (NetExec) — for `ad_hostmap`
-- PowerShell — for `ADScoutPS`
+- Linux attack host (Kali / Parrot)
+- `python3` — stdlib only for most tools
+- `nmap`, `nxc` (NetExec), `impacket` — for host mapping, spraying, and parsing
+- PowerShell — for `ADScoutPS` and `power_shellz`
 
 ---
 
 ## ⚖️ Legal & Scope
 
-For **authorized security testing and education only**. Read-only where it says read-only; destructive nowhere by design. Get permission in writing before you point any of it at a system you don't own.
+For **authorized security testing and education only**. Read-only where it says read-only; nothing destructive by design. Get permission in writing before you point any of it at a system you don't own.
 
 ---
 
