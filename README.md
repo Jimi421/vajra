@@ -19,7 +19,6 @@ In Vedic tradition the *vajra* is Indra's weapon: a thunderbolt that's both inde
 | Tool | What it does |
 | --- | --- |
 | **setup.sh** | One-time Kali config. Wires aliases and a `myip()` helper into `.bashrc`, bumps the file-descriptor limit, and checks the core toolset is installed (nmap, rustscan, feroxbuster, ffuf, evil-winrm, impacket, ligolo-ng, bloodhound…). |
-| **go.sh** | Per-target engagement setup. `source go.sh <ip> [label]` auto-detects `tun0` for LHOST, sets LPORT, builds a clean `scans/exploits/loot/screenshots/tunnels` folder tree, and prints an at-a-glance target banner. |
 | **pyfix.py** | Python 2 → 3 exploit converter. Detects Py2 signatures in an exploit-db script and refactors it (`print`, `raw_input`, `urllib2`, `except E, e`, etc.). `--dry-run`, `--inplace`, or writes `*_py3.py`. Turns dead exploits into working ones. |
 
 ---
@@ -80,9 +79,6 @@ Every parser follows the same idea: **dump to a file → run the script → copy
 git clone https://github.com/Jimi421/vajra.git
 cd vajra
 bash setup.sh                       # one-time Kali config
-
-# per target:
-source go.sh 10.10.10.5 boxname     # dirs + LHOST/LPORT + banner
 ```
 
 Map an AD lab into `/etc/hosts`, then spray:
